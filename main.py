@@ -139,6 +139,11 @@ class Object:
 		self.player_stats = player_stats
 		if player_stats:
 			self.player_stats.owner = self
+	
+	def is_player(self):
+		if self is player:
+			return True
+		return False
 
 	def move(self, dx, dy):
 		#move by the given amount, if the destination is not blocked
@@ -194,11 +199,14 @@ class Object:
 class Fighter:
 	tick_total = 0
 	#combat-related properties and methods (monster, player, NPC).
-	def __init__(self, hp, defense, power, xp, death_function=None, species='Humanoid'):
+	def __init__(self, hp, defense, power, xp, death_function=None, species='Humanoid', evade = 10, block = 0, accuracy = 12):
 		self.base_max_hp = hp
 		self.hp = hp
 		self.base_defense = defense
+		self.base_evade = evade
+		self.base_block = block
 		self.base_power = power
+		self.base_accuracy = accuracy
 		self.xp = xp
 		self.death_function = death_function
 		self.species = species
@@ -209,9 +217,28 @@ class Fighter:
 		return self.base_power + bonus
 
 	@property
+	def accuracy(self):  #return actual accuracy, by summing up the bonuses from all equipped items and average of str and agi.
+		stat_bonus = 0 #Monsters have no stats.
+		if self.owner.is_player():
+			stats = self.owner.player_stats
+			stat_bonus = (stats.strength + stats.agility) / 2
+		bonus = sum(equipment.accuracy_bonus for equipment in get_all_equipped(self.owner))
+		return self.base_accuracy + stat_bonus + bonus
+
+	@property
 	def defense(self):  #return actual defense, by summing up the bonuses from all equipped items
 		bonus = sum(equipment.defense_bonus for equipment in get_all_equipped(self.owner))
 		return self.base_defense + bonus
+	
+	@property
+	def evade(self):
+		bonus = sum(equipment.evade_bonus for equipment in get_all_equipped(self.owner))
+		return self.base_evade + bonus
+
+	@property
+	def block(self):
+		bonus = sum(equipment.block_bonus for equipment in get_all_equipped(self.owner))
+		return self.base_block + bonus
 
 	@property
 	def max_hp(self):  #return actual max_hp, by summing up the bonuses from all equipped items
@@ -219,21 +246,36 @@ class Fighter:
 		return self.base_max_hp + bonus
 
 	def attack(self, target):
-		#a slightly less simple formula for attack damage
-		armor_reduction = roll_dice('1d' + str(int(target.fighter.defense)))
-		damage = self.power - armor_reduction
+		damage = self.power
 
 		if damage > 0:
 			#make the target take some damage
-			message(self.owner.name.capitalize() + ' attacks ' + target.name + ' for ' + str(damage) + ' hit points.')
-			target.fighter.take_damage(damage)
-		else:
-			message(self.owner.name.capitalize() + ' attacks ' + target.name + ' but it has no effect!', libtcod.grey)
+			target.fighter.take_damage(damage, attacker = self)
+	
+	def accuracy_roll(self):
+		return
 
-	def take_damage(self, damage):
+	def take_damage(self, damage, attacker=None, piercing=0):
+		if attacker:
+			message(attacker.owner.name.title() + ' attacks ' + self.owner.name + '.')
+		
+		was_evaded = self.evade_roll(attacker)
+		if was_evaded:
+			return
+		was_blocked = self.block_roll(attacker)
+		if was_blocked:
+			return
+		
+		if piercing == 0:
+			damage = self.armor_roll(damage)
 		#apply damage if possible
 		if damage > 0:
 			self.hp -= damage
+			if self.owner is player:
+				txt_color = libtcod.orange
+			else:
+				txt_color = libtcod.white
+			message(self.owner.name.title() + ' is hit for ' + str(damage) + ' hit points.', txt_color, False)
 
 			#check for death. if there's a death function, call it
 			if self.hp <= 0:
@@ -244,6 +286,52 @@ class Fighter:
 
 				if self.owner != player:  #yield experience to the player
 					player.fighter.xp += self.xp
+	
+	def armor_roll(self, damage):
+		#a slightly less simple formula for attack damage
+		armor_reduction = libtcod.random_get_int(0, 0, self.defense) #Roll a number, up to our combined armor value.
+		damage -= armor_reduction #Reduce damage by how high we rolled.
+		if damage <= 0: #If we completely negated the attack, let everyone know.
+			message(self.owner.name.title() + "'s defenses compltely absorb the attack.", libtcod.grey, False)
+		print self.owner.name + ' rolled ' + str(armor_reduction) + '.'
+		return damage
+	
+	def evade_roll(self, attacker):
+		if attacker:
+			to_hit = attacker.owner.fighter.accuracy
+			evade = self.evade
+			
+			if evade <= 0:
+				return False #Don't bother rolling if we can never dodge
+			
+			to_hit_dice = libtcod.random_get_int(0, 0, to_hit)
+			evade_dice = libtcod.random_get_int(0, 0, evade)
+			if to_hit_dice >= evade_dice:
+				return False #We failed to dodge.
+			if evade_dice - to_hit_dice <= evade * 0.2:
+				message(self.owner.name.title() + ' barely dodges the attack.', libtcod.grey, False)
+			else:
+				message(self.owner.name.title() + ' dodges the attack.', libtcod.grey, False)
+			return True #We succeeded in dodging
+		return
+	
+	def block_roll(self, attacker):
+		to_hit = attacker.owner.fighter.accuracy
+		shields = self.block
+		
+		if shields <= 0:
+			return False #Don't bother rolling if we can never block.
+		
+		to_hit_dice = libtcod.random_get_int(0, 0, to_hit)
+		block_dice = libtcod.random_get_int(0, 0, shields)
+		if to_hit_dice >= block_dice:
+			return False #We failed to block.
+		if block_dice - to_hit_dice <= shields * 0.2:
+			message(self.owner.name.title() + ' barely blocks the attack.', libtcod.grey, False)
+		else:
+			message(self.owner.name.title() + ' blocks the attack.', libtcod.grey, False)
+		return True
+		
 
 	def heal(self, amount):
 		#heal by the given amount, without going over the maximum
@@ -504,9 +592,13 @@ class Item:
  
 class Equipment:
 	#an object that can be equipped, yielding bonuses. automatically adds the Item component.
-	def __init__(self, slot, power_bonus=0, defense_bonus=0, max_hp_bonus=0,strength_bonus=0, agility_bonus=0, intelligence_bonus=0, oxygen_bonus=0, energy_bonus=0):
+	def __init__(self, slot, power_bonus=0, accuracy_bonus=0, defense_bonus=0, evade_bonus=0, block_bonus=0,
+						max_hp_bonus=0,strength_bonus=0, agility_bonus=0, intelligence_bonus=0, oxygen_bonus=0, energy_bonus=0):
 		self.power_bonus = power_bonus
+		self.accuracy_bonus = accuracy_bonus
 		self.defense_bonus = defense_bonus
+		self.evade_bonus = evade_bonus
+		self.block_bonus = block_bonus
 		self.max_hp_bonus = max_hp_bonus
 		self.strength_bonus = strength_bonus
 		self.agility_bonus = agility_bonus
@@ -599,7 +691,7 @@ def create_v_tunnel(y1, y2, x):
 		map[x][y].blocked = False
 		map[x][y].block_sight = False
  
-def make_map():
+def make_map(algor=None):
 	global map, objects, stairs
 
 	#the list of objects with just the player
@@ -613,65 +705,66 @@ def make_map():
 	rooms = []
 	num_rooms = 0
 	
-	for r in range(MAX_ROOMS):
-		#random width and height
-		w = libtcod.random_get_int(0, ROOM_MIN_SIZE, ROOM_MAX_SIZE)
-		h = libtcod.random_get_int(0, ROOM_MIN_SIZE, ROOM_MAX_SIZE)
-		#random position without going out of the boundaries of the map
-		x = libtcod.random_get_int(0, 0, MAP_WIDTH - w - 1)
-		y = libtcod.random_get_int(0, 0, MAP_HEIGHT - h - 1)
+	if algor == 'old' or algor == None:
+		for r in range(MAX_ROOMS):
+			#random width and height
+			w = libtcod.random_get_int(0, ROOM_MIN_SIZE, ROOM_MAX_SIZE)
+			h = libtcod.random_get_int(0, ROOM_MIN_SIZE, ROOM_MAX_SIZE)
+			#random position without going out of the boundaries of the map
+			x = libtcod.random_get_int(0, 0, MAP_WIDTH - w - 1)
+			y = libtcod.random_get_int(0, 0, MAP_HEIGHT - h - 1)
 
-		#"Rect" class makes rectangles easier to work with
-		new_room = Rect(x, y, w, h)
+			#"Rect" class makes rectangles easier to work with
+			new_room = Rect(x, y, w, h)
 
-		#run through the other rooms and see if they intersect with this one
-		failed = False
-		for other_room in rooms:
-			if new_room.intersect(other_room):
-				failed = True
-				break
+			#run through the other rooms and see if they intersect with this one
+			failed = False
+			for other_room in rooms:
+				if new_room.intersect(other_room):
+					failed = True
+					break
 
-		if not failed:
-			#this means there are no intersections, so this room is valid
+			if not failed:
+				#this means there are no intersections, so this room is valid
 
-			#"paint" it to the map's tiles
-			create_room(new_room)
+				#"paint" it to the map's tiles
+				create_room(new_room)
 
-			#add some contents to this room, such as monsters
-			place_objects(new_room)
+				#add some contents to this room, such as monsters
+				place_objects(new_room)
 
-			#center coordinates of new room, will be useful later
-			(new_x, new_y) = new_room.center()
+				#center coordinates of new room, will be useful later
+				(new_x, new_y) = new_room.center()
 
-			if num_rooms == 0:
-				#this is the first room, where the player starts at
-				player.x = new_x
-				player.y = new_y
-			else:
-				#all rooms after the first:
-				#connect it to the previous room with a tunnel
-
-				#center coordinates of previous room
-				(prev_x, prev_y) = rooms[num_rooms-1].center()
-
-				#draw a coin (random number that is either 0 or 1)
-				if libtcod.random_get_int(0, 0, 1) == 1:
-					#first move horizontally, then vertically
-					create_h_tunnel(prev_x, new_x, prev_y)
-					create_v_tunnel(prev_y, new_y, new_x)
+				if num_rooms == 0:
+					#this is the first room, where the player starts at
+					player.x = new_x
+					player.y = new_y
 				else:
-					#first move vertically, then horizontally
-					create_v_tunnel(prev_y, new_y, prev_x)
-					create_h_tunnel(prev_x, new_x, new_y)
+					#all rooms after the first:
+					#connect it to the previous room with a tunnel
 
-			#finally, append the new room to the list
-			rooms.append(new_room)
-			num_rooms += 1
+					#center coordinates of previous room
+					(prev_x, prev_y) = rooms[num_rooms-1].center()
 
-	#create stairs at the center of the last room
-	stairs = Object(new_x, new_y, '<', 'stairs', libtcod.white, always_visible=True)
-	objects.append(stairs)
-	stairs.send_to_back()  #so it's drawn below the monsters
+					#draw a coin (random number that is either 0 or 1)
+					if libtcod.random_get_int(0, 0, 1) == 1:
+						#first move horizontally, then vertically
+						create_h_tunnel(prev_x, new_x, prev_y)
+						create_v_tunnel(prev_y, new_y, new_x)
+					else:
+						#first move vertically, then horizontally
+						create_v_tunnel(prev_y, new_y, prev_x)
+						create_h_tunnel(prev_x, new_x, new_y)
+
+				#finally, append the new room to the list
+				rooms.append(new_room)
+				num_rooms += 1
+
+		#create stairs at the center of the last room
+		stairs = Object(new_x, new_y, '<', 'stairs', libtcod.white, always_visible=True)
+		objects.append(stairs)
+		stairs.send_to_back()  #so it's drawn below the monsters
 
 def place_objects(room):
 
@@ -717,14 +810,17 @@ def place_monsters(room):
 					uniques.append(choice)
 			
 			
-			# build the monster components
+			# build the monster components (hp, defense, power, xp, death_function=None, species='Humanoid', evade = 10, block = 0, accuracy = 12):
 			fighter_component = Fighter(
 				hp=int(monster['hp']),
 				defense=int(monster['defense']),
 				power=int(monster['power']),
 				xp=int(monster['xp']),
 				death_function=globals().get(monster['death_function'], None),
-				species = str(get_config(monster, 'species', 'Humanoid')))
+				species = str(get_config(monster, 'species', 'Humanoid')),
+				evade = int(get_config(monster, 'evade', '10')),
+				block = int(get_config(monster, 'block', '0')),
+				accuracy = int(get_config(monster, 'accuracy', '12')))
 				
 			# this gets a class object by name
 			ai_class = globals().get(monster['ai_component'])
@@ -777,11 +873,14 @@ def place_items(room):
 					use_function=globals().get(item['use_function'], None))
 			elif item['type'] == 'equipment':
 				#build the equipment component, using
-				#(self, slot, power_bonus=0, defense_bonus=0, max_hp_bonus=0, strength_bonus=0, agility_bonus=0, intelligence_bonus=0, oxygen_bonus=0)
+				#(self, slot, power_bonus=0, accuracy_bonus=0, defense_bonus=0, evade_bonus=0, block_bonus=0, max_hp_bonus=0,strength_bonus=0, agility_bonus=0, intelligence_bonus=0, oxygen_bonus=0, energy_bonus=0):
 				equipment_component = Equipment(
 					slot=str(item['slot']), #We want an error to occur if slot is empty
 					power_bonus = int(get_config(item, 'power', 0)), #get_config() lets us not need to define every single stat on an item in the config file
+					accuracy_bonus = int(get_config(item, 'accuracy', 0)),
 					defense_bonus = int(get_config(item, 'defense', 0)),
+					evade_bonus = int(get_config(item, 'evade', 0)),
+					block_bonus = int(get_config(item, 'block', 0)),
 					max_hp_bonus = int(get_config(item, 'max_hp', 0)),
 					strength_bonus = int(get_config(item, 'strength', 0)),
 					agility_bonus = int(get_config(item, 'agility', 0)),
@@ -835,7 +934,7 @@ def get_names_under_mouse():
 		if obj.x == x and obj.y == y and libtcod.map_is_in_fov(fov_map, obj.x, obj.y)]
 
 	names = ', '.join(names)  #join the names, separated by commas
-	return names.capitalize()
+	return names.title()
 
 def move_camera(target_x, target_y):
 	global camera_x, camera_y, fov_recompute
@@ -1021,10 +1120,10 @@ def render_all():
 	libtcod.console_print_ex(panel, white_text_left_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.fighter.defense))
 	libtcod.console_print_ex(panel, white_text_right_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.player_stats.strength))
 	white_text_y += 1
-	libtcod.console_print_ex(panel, white_text_left_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, "0") #NYI
+	libtcod.console_print_ex(panel, white_text_left_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.fighter.evade))
 	libtcod.console_print_ex(panel, white_text_right_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.player_stats.agility))
 	white_text_y += 1
-	libtcod.console_print_ex(panel, white_text_left_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, "0") #NYI
+	libtcod.console_print_ex(panel, white_text_left_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.fighter.block))
 	libtcod.console_print_ex(panel, white_text_right_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.player_stats.intelligence))
 	white_text_y += 2
 	libtcod.console_print_ex(panel, white_text_right_x, white_text_y, libtcod.BKGND_NONE, libtcod.LEFT, str(player.fighter.tick_total))
@@ -1373,7 +1472,7 @@ def handle_keys():
 			
 			return 'didnt-take-turn'
 
-def message(new_msg, color = libtcod.white):
+def message(new_msg, color = libtcod.white, append = True, ):
 	#split the message if necessary, among multiple lines
 	new_msg_lines = textwrap.wrap(new_msg, MSG_WIDTH)
 
@@ -1383,7 +1482,18 @@ def message(new_msg, color = libtcod.white):
 			del game_msgs[0]
 
 		#add the new line as a tuple, with the text and the color
-		game_msgs.append( (line, color) )
+		if append:
+			game_msgs.append( (line, color) )
+		else: #We want multiple messages on the same line, if possible.
+			if game_msgs:
+				new_msg = game_msgs.pop()
+				if color == libtcod.white and new_msg[1] is not color:
+					color = new_msg[1]
+				new_msg = new_msg[0]
+				
+				game_msgs.append( (new_msg + '  ' + line, color) )
+			else: #We have an empty list
+				game_msgs.append( (line, color) )
 
 def check_level_up():
 	#see if the player's experience is enough to level-up
@@ -1424,7 +1534,7 @@ def player_death(player):
 def monster_death(monster):
 	#transform it into a nasty corpse! it doesn't block, can't be
 	#attacked and doesn't move
-	message('The ' + monster.name + ' is dead! You gain ' + str(monster.fighter.xp) + ' experience points.', libtcod.orange)
+	message('The ' + monster.name + ' is dead! You gain ' + str(monster.fighter.xp) + ' experience points.', libtcod.yellow)
 	monster.char = '%'
 	monster.color = libtcod.dark_red
 	monster.blocks = False
@@ -1658,7 +1768,7 @@ def new_player(player_name,player_race,player_title):
 	
 	#create object representing the player
 	fighter_component = Fighter(hp=9, defense=0, power=2, xp=0, death_function=player_death)
-	stats_component = PlayerStats(strength=4, agility=4, intelligence=4, oxygen=1000)
+	stats_component = PlayerStats(strength=8, agility=8, intelligence=8, oxygen=1000)
 	player = Object(0, 0, '@', player_name, libtcod.white, blocks=True, fighter=fighter_component, player_stats=stats_component)
 
 	player.level = 1
