@@ -108,7 +108,7 @@ class Rect:
 class Object:
 	#this is a generic object: the player, a monster, an item, the stairs...
 	#it's always represented by a character on screen.
-	def __init__(self, x, y, char, name, color, blocks=False, always_visible=False, fighter=None, ai=None, player_stats=None, item=None, equipment=None):
+	def __init__(self, x, y, char, name, color, blocks=False, always_visible=False, fighter=None, ai=None, player_stats=None, player_skills=None, item=None, equipment=None):
 		self.x = x
 		self.y = y
 		self.char = char
@@ -139,6 +139,10 @@ class Object:
 		self.player_stats = player_stats
 		if player_stats:
 			self.player_stats.owner = self
+		
+		self.player_skills = player_skills
+		if player_skills:
+			self.player_skills.owner = self
 	
 	def is_player(self):
 		if self is player:
@@ -181,7 +185,7 @@ class Object:
 
 	def draw(self):
 		#only show if it's visible to the player
-		if libtcod.map_is_in_fov(fov_map, self.x, self.y):
+		if libtcod.map_is_in_fov(fov_map, self.x, self.y) or (self.always_visible and map[self.x][self.y].explored):
 			(x, y) = to_camera_coordinates(self.x, self.y)
 
 			if x is not None:
@@ -231,19 +235,30 @@ class Fighter:
 		return self.base_defense + bonus
 	
 	@property
-	def evade(self):
+	def evade(self): #Return actual evade stat, by summing up bonuses from equipment and skills.
+		skill_bonus = 0 
+		if self.owner.is_player(): #Monsters don't use skills, so we need to check if it's a player.
+			skill_bonus = self.owner.player_skills.skills['Dodge']
 		bonus = sum(equipment.evade_bonus for equipment in get_all_equipped(self.owner))
-		return self.base_evade + bonus
+		return self.base_evade + skill_bonus + bonus
 
 	@property
-	def block(self):
+	def block(self):  #Return actual block stat, by summing up bonuses from equipment and skills.
+		if get_equipped_in_slot('left hand') == None: #No shield means no blocking.
+			return 0
+		skill_bonus = 0
+		if self.owner.is_player(): #Monsters don't use skills, so we need to check if it's a player.
+			skill_bonus = self.owner.player_skills.skills['Shields']
 		bonus = sum(equipment.block_bonus for equipment in get_all_equipped(self.owner))
-		return self.base_block + bonus
+		return self.base_block + skill_bonus + bonus
 
 	@property
-	def max_hp(self):  #return actual max_hp, by summing up the bonuses from all equipped items
+	def max_hp(self):  #return actual max_hp, by summing up the bonuses from all equipped items as well as the current level.
+		level_bonus = 0
+		if self.owner.is_player():
+			level_bonus = int(11.0 * (player.level / 2.0))
 		bonus = sum(equipment.max_hp_bonus for equipment in get_all_equipped(self.owner))
-		return self.base_max_hp + bonus
+		return self.base_max_hp + level_bonus + bonus
 
 	def attack(self, target):
 		damage = self.power
@@ -257,7 +272,7 @@ class Fighter:
 
 	def take_damage(self, damage, attacker=None, piercing=0):
 		if attacker:
-			message(attacker.owner.name.title() + ' attacks ' + self.owner.name + '.')
+			message(attacker.owner.name.title() + ' attacks ' + self.owner.name.title() + '.')
 		
 		was_evaded = self.evade_roll(attacker)
 		if was_evaded:
@@ -305,7 +320,9 @@ class Fighter:
 				return False #Don't bother rolling if we can never dodge
 			
 			to_hit_dice = libtcod.random_get_int(0, 0, to_hit)
-			evade_dice = libtcod.random_get_int(0, 0, evade)
+			evade_dice_1 = libtcod.random_get_int(0, 0, evade)
+			evade_dice_2 = libtcod.random_get_int(0, 0, evade)
+			evade_dice = (evade_dice_1 + evade_dice_2) / 2
 			if to_hit_dice >= evade_dice:
 				return False #We failed to dodge.
 			if evade_dice - to_hit_dice <= evade * 0.2:
@@ -323,7 +340,9 @@ class Fighter:
 			return False #Don't bother rolling if we can never block.
 		
 		to_hit_dice = libtcod.random_get_int(0, 0, to_hit)
-		block_dice = libtcod.random_get_int(0, 0, shields)
+		block_dice_1 = libtcod.random_get_int(0, 0, shields)
+		block_dice_2 = libtcod.random_get_int(0, 0, shields)
+		block_dice = (block_dice_1 + block_dice_2) / 2
 		if to_hit_dice >= block_dice:
 			return False #We failed to block.
 		if block_dice - to_hit_dice <= shields * 0.2:
@@ -475,7 +494,44 @@ class PlayerStats: #Anything we want to track on the player specifically goes he
 
 	def adjust_intelligence(self, amount):
 		self.intelligence = self.intelligence + amount
-	
+
+class PlayerSkills():
+	skills = {}
+	def __init__(self):
+		self.skills = {
+				'Command' : 0,
+				'Fighting' : 0,
+				'Armor' : 0,
+				'Dodge' : 0,
+				'Shields' : 0,
+				'Stealth' : 0,
+				'Unarmed Combat' : 0,
+				'Short Blades' : 0,
+				'Long Blades' : 0,
+				'Blunt Weapons' : 0,
+				'Axes' : 0,
+				'Ballistics' : 0,
+				'Energy' : 0,
+				'Crossbow' : 0,
+				'Throwing' : 0,
+				'EVA' : 0,
+				'Construction' : 0,
+				'Electrical Engineering' : 0,
+				'Heavy Machinery' : 0,
+				'Complex Devices' : 0,
+				'Info Tech' : 0,
+				'Chemistry' : 0,
+				'Medicine' : 0
+				}
+	def list_skills(self): #debug
+		skills = self.skills
+		for skill in skills:
+			skills[skill] = skills[skill] + 1
+			print skill
+			print skills[skill]
+			message(skill + ' is at level ' + str(skills[skill]) + '.', libtcod.cyan)
+
+
 
 class BasicMonster:
 	#AI for a basic monster.
@@ -1447,6 +1503,14 @@ def handle_keys():
 					player.fighter.heal(player.fighter.max_hp)
 					message('Health restored to full.')
 				
+				elif choice == 'xp':
+					player.fighter.xp += 500
+					message('XP granted.')
+				
+				elif choice == 'skills':
+					player.player_skills.list_skills()
+					message('Skills printed to console.')
+				
 				elif choice == 'adjust energy':
 					amount = text_input()
 					player.player_stats.recharge(int(amount))
@@ -1502,22 +1566,22 @@ def check_level_up():
 		#it is! level up and ask to raise some stats
 		player.level += 1
 		player.fighter.xp -= level_up_xp
+
 		message('Your battle skills grow stronger! You reached level ' + str(player.level) + '!', libtcod.yellow)
 
 		choice = None
 		while choice == None:  #keep asking until a choice is made
 			choice = menu('Level up! Choose a stat to raise:\n',
-						  ['Constitution (+20 HP, from ' + str(player.fighter.max_hp) + ')',
-						   'Strength (+1 attack, from ' + str(player.fighter.power) + ')',
-						   'Agility (+1 defense, from ' + str(player.fighter.defense) + ')'], LEVEL_SCREEN_WIDTH)
+						  ['Strength (+1 strength, from ' + str(player.player_stats.strength) + ')',
+						   'Agility (+1 agility, from ' + str(player.player_stats.agility) + ')',
+						   'Intelligence (+1 intelligence, from ' + str(player.player_stats.intelligence) + ')'], LEVEL_SCREEN_WIDTH)
 
 		if choice == 0:
-			player.fighter.base_max_hp += 20
-			player.fighter.hp += 20
+			player.player_stats.strength += 1
 		elif choice == 1:
-			player.fighter.base_power += 1
+			player.player_stats.agility += 1
 		elif choice == 2:
-			player.fighter.base_defense += 1
+			player.player_stats.intelligence += 1
 
 
 
@@ -1767,9 +1831,10 @@ def new_player(player_name,player_race,player_title):
 	global player, inventory, abilities
 	
 	#create object representing the player
-	fighter_component = Fighter(hp=9, defense=0, power=2, xp=0, death_function=player_death)
+	fighter_component = Fighter(hp=15, defense=0, power=2, xp=0, death_function=player_death)
 	stats_component = PlayerStats(strength=8, agility=8, intelligence=8, oxygen=1000)
-	player = Object(0, 0, '@', player_name, libtcod.white, blocks=True, fighter=fighter_component, player_stats=stats_component)
+	skills_component = PlayerSkills()
+	player = Object(0, 0, '@', player_name, libtcod.white, blocks=True, fighter=fighter_component, player_stats=stats_component, player_skills=skills_component)
 
 	player.level = 1
 	
