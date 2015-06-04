@@ -534,15 +534,32 @@ class PlayerSkills():
 
 
 class BasicMonster:
+	global fov_map
 	#AI for a basic monster.
+	
+	def calc_path(self):
+		self.path_to_target = libtcod.path_new_using_map(fov_map, 1.41)
+		monster = self.owner
+		libtcod.path_compute(self.path_to_target, monster.x, monster.y, player.x, player.y)
+	
+	def walk_path(self):
+		monster = self.owner
+		step_x,step_y=libtcod.path_walk(self.path_to_target, True)
+		monster.move_towards(step_x, step_y)
+		if not monster.x is None:
+			print 'Astar coord: ',monster.x,monster.y
+		else:
+			print "I'm stuck!"
+	
 	def take_turn(self):
 		#a basic monster takes its turn. if you can see it, it can see you
 		monster = self.owner
-		if libtcod.map_is_in_fov(fov_map, monster.x, monster.y):
+		if libtcod.map_is_in_fov(fov_map, monster.x, monster.y) or True:
 
 			#move towards player if far away
 			if monster.distance_to(player) >= 2:
-				monster.move_towards(player.x, player.y)
+				self.calc_path()
+				self.walk_path()
 
 			#close enough, attack! (if the player is still alive.)
 			elif player.fighter.hp > 0:
